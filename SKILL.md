@@ -1,15 +1,18 @@
 ---
 name: web-deploy
-description: Deploy a web app from a Docker container to a public URL. Supports Cloudflare Tunnel (instant, no account), Google Cloud Run (free, scalable), Render, Netlify, and AWS App Runner. Language-agnostic — works with any stack that runs in Docker.
-version: 1.0.0
+description: Deploy a web app from a Docker container to a public URL. Supports Cloudflare Tunnel (instant, no account), Google Cloud Run (free, scalable), Render, Netlify, and AWS App Runner. Full server management via Laravel Forge API. Domain registration and DNS management via Cloudflare API. Credentials stored securely in local SQLite vault.
+version: 2.0.0
 user-invokable: true
 commands:
   - /deploy
   - /web-deploy
   - /go-live
+  - /forge
+  - /domain
 metadata:
   scripts_dir: scripts/
   adr: ADR.md
+  credential_db: ~/.web-deploy/config.db
 ---
 
 # web-deploy Skill
@@ -26,8 +29,29 @@ Deploy a Dockerised web app to a public URL.
 | Static site / JAMstack (no backend) | `netlify` | ~1 minute |
 | Next.js / Nuxt on Vercel | `vercel` | ~1 minute |
 | Learning AWS, want App Runner | `aws-app-runner` | ~10 minutes |
+| Need a managed PHP/Laravel server (production) | `forge` | ~10 minutes |
+| Need to add a domain to Cloudflare | `cloudflare-domain` | ~2 minutes |
+| Need to add/update a DNS record | `cloudflare-dns` | ~30 seconds |
 
 **If the user hasn't specified a strategy:** ask them which situation matches and recommend accordingly.
+
+---
+
+## First-time Setup (credential vault)
+
+All API credentials are stored securely in a local SQLite DB (`~/.web-deploy/config.db`, chmod 600). Run once before using Forge or Cloudflare strategies:
+
+```bash
+bash <SKILL_DIR>/scripts/setup.sh
+```
+
+This interactively prompts for:
+- Laravel Forge API token
+- Cloudflare API token + Account ID
+- Google Cloud project ID
+- Render API key
+
+Credentials are never stored in environment variables or SKILL.md — always read from the local vault at runtime.
 
 ---
 
@@ -172,6 +196,61 @@ Report to user:
 
 ---
 
+### Strategy: `forge` — Laravel Forge server + site
+
+**Step A — Create server (if needed):**
+```bash
+bash <SKILL_DIR>/scripts/forge-create-server.sh <name> <provider> <region> <size> [php_version]
+# Example: bash scripts/forge-create-server.sh prod-server hetzner eu-central 1 php84
+# Providers: ocean2 (DigitalOcean) | akamai (Linode) | vultr2 | aws | hetzner | custom
+# Wait ~10 minutes for provisioning
+```
+
+**Step B — Deploy site from Git:**
+```bash
+bash <SKILL_DIR>/scripts/forge-deploy-site.sh <server_id> <domain> <github_user/repo> [branch]
+# Example: bash scripts/forge-deploy-site.sh 12345 myapp.com myorg/myrepo main
+# This: creates site, links GitHub repo, requests SSL, triggers first deploy
+```
+
+**Then verify:**
+```bash
+bash <SKILL_DIR>/scripts/verify-deploy.sh https://<domain>
+```
+
+---
+
+### Strategy: `cloudflare-domain` — add domain to Cloudflare
+
+```bash
+bash <SKILL_DIR>/scripts/cloudflare-add-domain.sh <domain>
+# Example: bash scripts/cloudflare-add-domain.sh myapp.com
+```
+
+Returns nameservers to set at the domain registrar. After DNS propagation, add records:
+
+```bash
+# Point domain to a server IP
+bash <SKILL_DIR>/scripts/cloudflare-add-dns.sh myapp.com A 1.2.3.4
+
+# Point domain to a PaaS CNAME (Render, Cloud Run, etc.)
+bash <SKILL_DIR>/scripts/cloudflare-add-dns.sh myapp.com CNAME my-app.onrender.com @ true
+```
+
+---
+
+### Strategy: `cloudflare-dns` — add/update a DNS record
+
+```bash
+bash <SKILL_DIR>/scripts/cloudflare-add-dns.sh <domain> <type> <content> [name] [proxied]
+# Examples:
+bash scripts/cloudflare-add-dns.sh myapp.com A 1.2.3.4           # A record, proxied
+bash scripts/cloudflare-add-dns.sh myapp.com CNAME app.render.com # CNAME @ proxied
+bash scripts/cloudflare-add-dns.sh myapp.com CNAME app.render.com www true
+```
+
+---
+
 ### Step 5 — Report
 
 Tell the user:
@@ -211,4 +290,19 @@ SKILL_DIR="~/.kernel/ecosystem/skills/web-deploy/scripts"
 | Vercel | ✅ Free forever | None | — | Next.js / Nuxt |
 | AWS App Runner | ⚠️ 12mo free | ~3s | Use RDS | AWS ecosystem |
 | Railway | ⚠️ $5/mo after trial | None | Postgres | Full-stack |
+| **Laravel Forge** | ❌ Paid ($12/mo) | None | Any | **Laravel production, managed server** |
+| **Cloudflare** | ✅ Free DNS/CDN/WAF | None | — | **Domain + DNS + WAF for any stack** |
+
+## Credential Vault Reference
+
+All sensitive values read from `~/.web-deploy/config.db` at runtime:
+
+| Service | Key | Where to get it |
+|---|---|---|
+| `forge` | `api_token` | https://forge.laravel.com/user-profile/api |
+| `cloudflare` | `api_token` | https://dash.cloudflare.com/profile/api-tokens |
+| `cloudflare` | `account_id` | Cloudflare dashboard right sidebar |
+| `gcloud` | `project_id` | https://console.cloud.google.com |
+| `gcloud` | `region` | e.g. `europe-west1` |
+| `render` | `api_key` | https://dashboard.render.com/u/settings#api-keys |
 | Laravel Forge | ❌ Paid | None | Any | Laravel production |
